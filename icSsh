@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+SILENT="TRUE"
+
+if [ -z "$AWS_REGION" ]; then
+  AWS_REGION="eu-west-2"
+fi
+
+
+ssh-keygen -b 2048 -t rsa -f /home/jenkins/.ssh/id_rsa  -q -N ""
+
+log() {
+  if [[ "${SILENT}" = "FALSE" ]]; then
+    echo -e "$1"
+  fi
+}
+
+error() {
+  echo -e "$1"
+}
+
+display_usage() {
+	echo -e "\nSSH into a aws host using instance connect."
+	echo -e "\nUsage: $(basename $0) [user@]host -s [-i key_file] [-L local_forward] [command]\n "
+  echo -e "         user@ - optional - specify a user. It will default to ec2-user"
+  echo -e "         host - mandatory - can either be an instance name or instance id\n"
+  echo -e "         command - optional - specify a command to run"
+}
+
+HOST="$1"
+if [[ "$HOST" == *@* ]]; then
+  HOST=(${HOST//@/ })
+  OS_USER="${HOST[0]}"
+  HOST="${HOST[1]}"
+else
+  OS_USER="ec2-user"
+fi
+
+if [ -z "$HOST" ]; then
+  log "${RED}ERROR${RED} Please specify instance name or id${NC}"
+  display_usage
+  exit 1
+fi
+
+shift
+
+LOCAL_FORWARD=""
+READLINK="readlink"
+
+while [[ $# -gt 0 ]]; do
+  key="$1"
+  case $key in
+  -s)
+    SILENT="TRUE"
+    shift
+    ;;
+  *)
+    # echo "unknown parameter $1 assuming it is a command"
+    COMMAND="$@"
+    TTY_FLAG="-T"
+    break
+    ;;
+  esac
+done
+
+log "Using user ${GREEN}${OS_USER}${NC} and host ${GREEN}${HOST}${NC}"
+
+if [[ -z "$SSH_PUBLIC" ]]; then
+  log "use default keys"
+  # check if on mac
+
+  SSH_PUBLIC="$(${READLINK} -f "${HOME}/.ssh/id_rsa.pub")"
+  SSH_PRIVATE="$(${READLINK} -f "${HOME}/.ssh/id_rsa")"
+fi
+
+log "LOCAL_FORWARD=${LOCAL_FORWARD}"
+
+# check keys exists
+if [[ ! -e "${SSH_PUBLIC}" ]]; then
+  error "${RED}ERROR${NC} Cound not find public key ${RED}${SSH_PUBLIC}${NC}"
+  exit 1
+fi
+
+if [[ ! -e "${SSH_PRIVATE}" ]]; then
+  error "${RED}ERROR${NC} Cound not find public key ${RED}${SSH_PUBLIC}${NC}"
+  exit 1
+fi
+
+log "Using public key ${GREEN}${SSH_PUBLIC}${NC} and private key ${GREEN}${SSH_PRIVATE}${NC}"
+
+if ! command -v jq &>/dev/null; then
+  error "${RED}ERROR${NC} jq could not be found - please install from https://stedolan.github.io/jq/download/"
+  exit 1
+fi
+
+TMPDIR="$(mktemp -d)"
+trap '{ rm -rf -- "$TMPDIR" && rm -rf send-ssh-public-key.json && log "Cleaned up TEMP folder ${GREEN}$TMPDIR${NC}"; }' EXIT
+
+aws ec2 describe-instances \
+    --region ${AWS_REGION} \
+    --filters \
+    Name=instance-state-name,Values=running \
+    Name=tag:Name,Values=${HOST} \
+    >"${TMPDIR}/instance.json"
+
+if [ $? -ne 0 ]; then
+  error "${RED}ERROR${NC} There was an error while trying to get instance details"
+  exit 1
+fi
+
+NOR="$(cat "${TMPDIR}/instance.json" | jq '.Reservations' | jq length)"
+if [ $NOR -eq 0 ]; then
+  error "${RED}ERROR${NC} Did not find a running instance with name ${RED}${HOST}${NC} in region ${RED}${AWS_REGION}${NC}"
+  exit 1
+fi
+
+if [ $NOR -gt 1 ]; then
+  error "${RED}ERROR${NC} Found more than one instance with name ${RED}${HOST}${NC} in region ${RED}${AWS_REGION}${NC}"
+  exit 1
+fi
+
+# copy the key to the instance
+## assume key is ${HOME}/.ssh/id_rsa.pub
+INSTANCE_ID="$(cat ${TMPDIR}/instance.json | jq -r '.Reservations[]|.Instances[].InstanceId')"
+AVAIL_ZONE="$(cat ${TMPDIR}/instance.json | jq -r '.Reservations[]|.Instances[].Placement.AvailabilityZone')"
+
+log "Sending ${GREEN}${SSH_PUBLIC}${NC} to ${GREEN}${OS_USER}@${INSTANCE_ID}/${HOST}${NC}"
+
+aws ec2-instance-connect send-ssh-public-key \
+  --region ${AWS_REGION} \
+  --instance-id ${INSTANCE_ID} \
+  --availability-zone ${AVAIL_ZONE} \
+  --instance-os-user ${OS_USER} \
+  --ssh-public-key file://${SSH_PUBLIC} \
+  >send-ssh-public-key.json
+
+if [ $? -ne 0 ]; then
+  error "${RED}ERROR${NC} Failed to copy ssh key ${SSH_PUBLIC} to ${HOST}"
+  cat send-ssh-public-key.json
+  exit 1
+fi
+
+log "Connecting to ${GREEN}${INSTANCE_ID}/${HOST}${NC} using ${GREEN}${SSH_PRIVATE}${NC} in region ${GREEN}${AWS_REGION}${NC}"
+log "COMMAND=${COMMAND}"
+ssh -i "${SSH_PRIVATE}" ${TTY_FLAG} \
+  -o "IdentitiesOnly=yes" \
+  -o "StrictHostKeyChecking=no" \
+  -o "ForwardAgent=no" \
+  -o ProxyCommand="sh -c \"aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'\"" \
+  ${LOCAL_FORWARD} ${SOCKS} \
+  ${OS_USER}@${INSTANCE_ID} ${COMMAND}
