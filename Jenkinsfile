@@ -1,12 +1,6 @@
 pipeline {
 
-    agent {
-        docker {
-            image '009543623063.dkr.ecr.eu-west-2.amazonaws.com/jenkins-docker-ci:latest'
-            alwaysPull true
-            args '-v /var/run/docker.sock:/var/run/docker.sock '
-        }
-    }
+    agent any
 
     environment {
         DOCKER_REGISTRY = '009543623063.dkr.ecr.eu-west-2.amazonaws.com'
@@ -16,6 +10,9 @@ pipeline {
         DOCKER_OPTS = '--pull --compress --no-cache=true --force-rm=true --progress=plain '
         ARTIFACTORY=credentials("devtools/jfrog-mca-bot")
         DOCKER_BUILDKIT = '1'
+        AWS_REGION = 'eu-west-2'
+        BRANCH_NAME = 'develop'
+        AWS_CREDENTIALS_ID = 'aws-jenkins-service-account-credentials' // ID for AWS credentials in Jenkins
     }
 
     triggers{
@@ -33,7 +30,25 @@ pipeline {
 
     stages {
 
+            stage('Authenticate to ECR') {
+                steps {
+                    withCredentials([aws(credentialsId: "${AWS_CREDENTIALS_ID}", accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        script {
+                             def AWS_PASSWORD = sh(script: "aws ecr get-login-password --region ${AWS_REGION}", returnStdout: true).trim()
+                             sh "echo ${AWS_PASSWORD} | docker login --username AWS --password-stdin 009543623063.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                        }
+                    }
+                }
+            }
+
         stage('build'){
+            agent {
+                docker {
+                    image '009543623063.dkr.ecr.eu-west-2.amazonaws.com/jenkins-docker-ci:latest'
+                    alwaysPull true
+                    args '-v /var/run/docker.sock:/var/run/docker.sock '
+                }
+            }
             steps{
                 sh '''
                     docker build ${DOCKER_OPTS} -t "${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${DOCKER_TAG}" .
