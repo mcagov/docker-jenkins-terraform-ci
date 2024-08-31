@@ -4,8 +4,7 @@ pipeline {
 
     environment {
         DOCKER_REGISTRY = '009543623063.dkr.ecr.eu-west-2.amazonaws.com'
-        //DOCKER_IMAGE_NAME = "${env.JOB_NAME.split('/')[-2]?.replaceFirst('docker-', '')}"
-        DOCKER_IMAGE_NAME = "jenkins-terraform-ci"
+        DOCKER_IMAGE_NAME = "${env.JOB_NAME.split('/')[-2]?.replaceFirst('docker-', '')}"
         DOCKER_TAG = "${env.BRANCH_NAME == 'master' ? 'latest' : env.BRANCH_NAME}"
         DOCKER_OPTS = '--pull --compress --no-cache=true --force-rm=true --progress=plain '
         //ARTIFACTORY=credentials("devtools/jfrog-mca-bot")
