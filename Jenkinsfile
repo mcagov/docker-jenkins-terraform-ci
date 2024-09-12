@@ -10,7 +10,7 @@ pipeline {
         //ARTIFACTORY=credentials("devtools/jfrog-mca-bot")
         DOCKER_BUILDKIT = '1'
         AWS_REGION = 'eu-west-2'
-        BRANCH_NAME = 'develop'
+
         AWS_CREDENTIALS_ID = 'aws-jenkins-service-account-credentials' // ID for AWS credentials in Jenkins
     }
 
